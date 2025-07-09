@@ -1,0 +1,81 @@
+{
+  "tables": {
+    "user": {
+      "description": "Сотрудники медицинских организаций",
+      "columns": {
+        "user_id": "Уникальный ID сотрудника",
+        "login": "Логин пользователя",
+        "last_name": "Фамилия",
+        "first_name": "Имя",
+        "middle_name": "Отчество",
+        "emp_code": "Код сотрудника",
+        "email": "Email адрес",
+        "live_start": "Дата начала работы",
+        "live_end": "Дата окончания работы",
+        "blocked": "Признак блокировки (0/1)"
+      }
+    },
+    "indicator_to_mo": {
+      "description": "Связь показателей с медицинскими организациями",
+      "columns": {
+        "indicator_to_mo_id": "ID связи показателя с МО",
+        "indicator_id": "ID базового показателя",
+        "mo_id": "ID медицинской организации",
+        "author_id": "ID автора показателя",
+        "priority": "Приоритет показателя (1-5)",
+        "live_start": "Дата начала действия",
+        "live_end": "Дата окончания действия",
+        "precision": "Точность округления значений"
+      }
+    },
+    "closed_period_values": {
+      "description": "Сохраненные значения показателей за закрытые периоды",
+      "columns": {
+        "indicator_to_mo_id": "ID связи показателя",
+        "period_start": "Начало периода",
+        "period_end": "Конец периода",
+        "period_type": "Тип периода (1-месяц, 2-квартал, 3-год)",
+        "weight": "Вес показателя",
+        "plan": "Плановое значение",
+        "fact": "Фактическое значение",
+        "result": "Процент выполнения плана (fact/plan*100)",
+        "complexity": "Сложность выполнения",
+        "complexity_accepted": "Принятая сложность",
+        "cost_plan": "Плановая стоимость",
+        "cost_fact": "Фактическая стоимость",
+        "cost_accepted": "Принятая стоимость",
+        "task_status": "Статус задачи",
+        "task_mark": "Средняя оценка по задаче"
+      }
+    },
+    "user_to_mo": {
+      "description": "Связь пользователей с медицинскими организациями",
+      "columns": {
+        "user_to_mo_id": "ID связи",
+        "user_id": "ID пользователя",
+        "mo_id": "ID медицинской организации",
+        "live_start": "Дата начала связи",
+        "live_end": "Дата окончания связи"
+      }
+    }
+  },
+  "relationships": [
+    "user.user_id → user_to_mo.user_id",
+    "user_to_mo.mo_id → indicator_to_mo.mo_id",
+    "indicator_to_mo.indicator_to_mo_id → closed_period_values.indicator_to_mo_id"
+  ],
+  "key_metrics": {
+    "fact": "Фактическое значение показателя (основной метрик эффективности)",
+    "plan": "Плановое значение показателя",
+    "result": "Процент выполнения плана (result = fact/plan*100, где 100% = план выполнен)",
+    "weight": "Вес показателя в общей системе оценки",
+    "period_type": "1=месяц, 2=квартал, 3=год"
+  },
+  "analysis_patterns": {
+    "top_performers": "ORDER BY fact DESC или result DESC",
+    "plan_overachievers": "WHERE result > 100",
+    "underperformers": "WHERE result < 100 или ORDER BY result ASC",
+    "dynamics": "GROUP BY period_start для временных рядов",
+    "monthly_analysis": "WHERE period_type = 1 AND period_start BETWEEN dates"
+  }
+}

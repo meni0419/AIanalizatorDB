@@ -1,3 +1,4 @@
+
 .PHONY: push merge_master delete_branch create_repository
 
 # Detect Windows or Unix-like system
@@ -94,5 +95,5 @@ else
 	git commit -m "Initial commit" && \
 	gh auth login && \
 	gh repo create $(r) --public --source=. --remote=origin && \
-	git push origin master
+	git push origin HEAD
 endif

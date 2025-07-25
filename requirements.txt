@@ -1,6 +1,6 @@
-python-dotenv
-mysql-connector-python
-sshtunnel
-google-generativeai
-paramiko
-pymysql
+flask
+flask-session
+werkzeug
+ollama
+markdown
+bcrypt

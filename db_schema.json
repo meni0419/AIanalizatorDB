@@ -57,12 +57,75 @@
         "live_start": "Дата начала связи",
         "live_end": "Дата окончания связи"
       }
+    },
+    "indicator": {
+      "description": "Базовые показатели системы",
+      "columns": {
+        "indicator_id": "ID показателя",
+        "name": "Наименование показателя",
+        "indicator_behaviour_id": "Тип показателя",
+        "author_id": "ID автора показателя",
+        "pid": "ID родительского показателя",
+        "desc": "Описание показателя",
+        "dead": "Признак удаления (0/1)"
+      }
+    },
+    "indicator_behaviour": {
+      "description": "Типы показателей",
+      "columns": {
+        "indicator_behaviour_id": "ID типа показателя",
+        "key": "Ключ типа (kpi, standart, task, etc.)",
+        "hidden": "Скрытый тип (0/1)"
+      }
+    },
+    "indicator_to_mo_fact": {
+      "description": "Факты (значения) показателей",
+      "columns": {
+        "indicator_to_mo_fact_id": "ID факта",
+        "indicator_to_mo_id": "ID связи показателя с МО",
+        "user_id": "ID пользователя (автора факта)",
+        "value": "Значение факта",
+        "comment": "Комментарий к факту",
+        "fact_time": "Дата создания факта",
+        "plan": "Признак плана (0=факт, 1=план)",
+        "common": "Общий факт (0/1)",
+        "mark": "Оценка"
+      }
+    },
+    "mo": {
+      "description": "Объекты управления (медицинские организации)",
+      "columns": {
+        "mo_id": "ID объекта управления",
+        "name": "Наименование объекта",
+        "mo_type_id": "Тип объекта",
+        "mo_position_id": "ID должности",
+        "live_start": "Дата начала действия",
+        "live_end": "Дата окончания действия",
+        "hidden": "Скрытый объект (0/1)"
+      }
+    },
+    "mo_hst": {
+      "description": "История изменений объектов управления",
+      "columns": {
+        "mo_hst_id": "ID записи истории",
+        "mo_id": "ID объекта управления",
+        "pid": "ID руководителя (тоже mo_id)",
+        "since": "Дата с которой действует связь",
+        "name": "Наименование в этот период",
+        "mo_position_id": "ID должности"
+      }
     }
   },
   "relationships": [
     "user.user_id → user_to_mo.user_id",
     "user_to_mo.mo_id → indicator_to_mo.mo_id",
-    "indicator_to_mo.indicator_to_mo_id → closed_period_values.indicator_to_mo_id"
+    "indicator_to_mo.indicator_to_mo_id → closed_period_values.indicator_to_mo_id",
+    "indicator.indicator_id → indicator_to_mo.indicator_id",
+    "indicator_behaviour.indicator_behaviour_id → indicator.indicator_behaviour_id",
+    "indicator_to_mo.indicator_to_mo_id → indicator_to_mo_fact.indicator_to_mo_id",
+    "mo.mo_id → indicator_to_mo.mo_id",
+    "mo_hst.mo_id → mo.mo_id",
+    "mo_hst.pid → mo.mo_id (руководитель)"
   ],
   "key_metrics": {
     "fact": "Фактическое значение показателя (основной метрик эффективности)",
@@ -76,6 +139,36 @@
     "plan_overachievers": "WHERE result > 100",
     "underperformers": "WHERE result < 100 или ORDER BY result ASC",
     "dynamics": "GROUP BY period_start для временных рядов",
-    "monthly_analysis": "WHERE period_type = 1 AND period_start BETWEEN dates"
+    "monthly_analysis": "WHERE period_type = 1 AND period_start BETWEEN dates",
+    "evaluation_analysis": "indicator_behaviour_id = 5 для оценок",
+    "self_evaluation": "indicator_id = 6 для самооценки",
+    "manager_evaluation": "indicator_id IN (7, 8) для оценки руководителя"
+  },
+  "evaluation_system": {
+    "indicator_behaviour_types": {
+      "5": "standart - оценка (от -200% до 200%)",
+      "6": "kpi_pay - оплата",
+      "1": "kpi - базовый KPI",
+      "2": "kpi_task - папка задачи",
+      "3": "kpi_standart - оценка папка",
+      "4": "task - задачи",
+      "7": "pay - оплата"
+    },
+    "evaluation_indicators": {
+      "6": "самооценка",
+      "7": "оценка руководителя",
+      "8": "оценка руководителя (альтернативная)"
+    },
+    "evaluation_types": {
+      "self_evaluation": "indicator_id = 6, автор = оцениваемый",
+      "manager_evaluation": "indicator_id IN (7, 8) ИЛИ автор является руководителем",
+      "peer_evaluation": "indicator_behaviour_id = 5 и автор не руководитель и не самооценка",
+      "evaluation_scale": "Значения от -200% до 200%"
+    },
+    "evaluation_logic": {
+      "self_evaluation": "автор факта = держатель показателя",
+      "manager_evaluation": "автор факта является руководителем оцениваемого (pid в mo_hst)",
+      "colleague_evaluation": "автор факта не руководитель и не самооценка"
+    }
   }
 }

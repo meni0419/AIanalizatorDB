@@ -1,12 +1,12 @@
 import ollama
 from ollama import Client
-from db_connect import get_db_connection
+from old.db_connect import get_db_connection
 import re
 import json
 import time
 import os
-from typing import List, Dict, Any, Tuple
-from datetime import datetime, timedelta
+from typing import List, Dict, Tuple
+
 import calendar
 
 client = Client(host='http://localhost:11434')
@@ -17,6 +17,14 @@ class SmartDatabaseAgent:
         self.schema = self.load_schema()
         self.query_patterns = self.setup_query_patterns()
         self.debug_mode = True  # Для отладки
+
+        # Инициализация Ollama клиента
+        try:
+            from ollama import Client
+            self.client = Client()
+        except ImportError:
+            print("⚠️  Ollama не установлен. ИИ-анализ будет недоступен.")
+            self.client = None
 
         # Правильные типы периодов
         self.period_types = {
@@ -30,7 +38,7 @@ class SmartDatabaseAgent:
 
     def load_schema(self) -> Dict:
         """Загружает схему БД из файла"""
-        schema_file = 'db_schema.json'
+        schema_file = '../db_schema.json'
         if not os.path.exists(schema_file):
             raise FileNotFoundError(f"Файл схемы БД '{schema_file}' не найден")
 
@@ -59,8 +67,280 @@ class SmartDatabaseAgent:
             'period_comparison': {
                 'keywords': ['сравнение', 'сравнить', 'за период', 'между'],
                 'template': 'period_comparison'
-            }
+            },
+            "evaluation_summary": [
+                "обобщение оценок",
+                "сделай обобщение оценок",
+                "анализ оценок",
+                "средняя оценка",
+                "анализ комментариев"
+            ],
+            "manager_self_evaluation": [
+                "обобщение оценки руководителем и самооценок",
+                "оценка руководителя и самооценка",
+                "руководитель и самооценка",
+                "сравнение самооценки и оценки руководителя"
+            ]
         }
+
+    def build_evaluation_summary_query(self, employee_name: str, year: int) -> str:
+        """Построение запроса для обобщения оценок сотрудника"""
+
+        return f"""
+        SELECT 
+            evaluator.last_name,
+            evaluator.first_name,
+            evaluator.middle_name,
+            AVG(f.value) as avg_rating,
+            COUNT(f.value) as rating_count,
+            GROUP_CONCAT(f.comment SEPARATOR ' | ') as comments
+        FROM indicator_to_mo_fact f
+        JOIN indicator_to_mo itm ON f.indicator_to_mo_id = itm.indicator_to_mo_id
+        JOIN indicator i ON itm.indicator_id = i.indicator_id
+        JOIN indicator_behaviour ib ON i.indicator_behaviour_id = ib.indicator_behaviour_id
+        JOIN mo evaluated_mo ON itm.mo_id = evaluated_mo.mo_id
+        JOIN user evaluated_user ON evaluated_mo.name = CONCAT(evaluated_user.last_name, ' ', evaluated_user.first_name, ' ', evaluated_user.middle_name)
+        JOIN user evaluator ON f.user_id = evaluator.user_id
+        WHERE 
+            ib.indicator_behaviour_id = 5  -- Оценки
+            AND f.plan = 0  -- Только факты
+            AND YEAR(f.fact_time) = {year}
+            AND CONCAT(evaluated_user.last_name, ' ', evaluated_user.first_name, ' ', evaluated_user.middle_name) LIKE '%{employee_name}%'
+            AND f.user_id != evaluated_user.user_id  -- Исключаем самооценки
+        GROUP BY evaluator.user_id, evaluator.last_name, evaluator.first_name, evaluator.middle_name
+        ORDER BY avg_rating DESC
+        """
+
+    def build_manager_self_evaluation_query(self, employee_name: str, year: int) -> str:
+        """Построение запроса для анализа оценок руководителя и самооценок"""
+
+        return f"""
+        SELECT 
+            evaluation_type,
+            AVG(value) as avg_rating,
+            COUNT(value) as rating_count,
+            GROUP_CONCAT(DISTINCT 
+                CASE 
+                    WHEN comment IS NOT NULL AND comment != '' 
+                    THEN CONCAT('Оценка: ', value, '% - ', comment) 
+                    ELSE CONCAT('Оценка: ', value, '%') 
+                END 
+                SEPARATOR '\n'
+            ) as detailed_comments,
+            MIN(value) as min_rating,
+            MAX(value) as max_rating,
+            GROUP_CONCAT(DISTINCT value ORDER BY value DESC) as all_ratings
+        FROM (
+            -- Самооценки (indicator_id = 6)
+            SELECT 
+                'Самооценка' as evaluation_type,
+                f.value,
+                f.comment
+            FROM indicator_to_mo_fact f
+            JOIN indicator_to_mo itm ON f.indicator_to_mo_id = itm.indicator_to_mo_id
+            JOIN indicator i ON itm.indicator_id = i.indicator_id
+            JOIN user_to_mo utmo ON itm.mo_id = utmo.mo_id
+            JOIN user u ON utmo.user_id = u.user_id
+            WHERE 
+                i.indicator_id = 6  -- Самооценка
+                AND f.plan = 0  -- Только факты
+                AND YEAR(f.fact_time) = {year}
+                AND CONCAT(u.last_name, ' ', u.first_name, ' ', IFNULL(u.middle_name, '')) LIKE '%{employee_name}%'
+                AND f.user_id = u.user_id  -- Автор = оцениваемый
+
+            UNION ALL
+
+            -- Оценки руководителя (indicator_id = 7, 8)
+            SELECT 
+                'Оценка руководителя' as evaluation_type,
+                f.value,
+                f.comment
+            FROM indicator_to_mo_fact f
+            JOIN indicator_to_mo itm ON f.indicator_to_mo_id = itm.indicator_to_mo_id
+            JOIN indicator i ON itm.indicator_id = i.indicator_id
+            JOIN user_to_mo utmo ON itm.mo_id = utmo.mo_id
+            JOIN user u ON utmo.user_id = u.user_id
+            WHERE 
+                i.indicator_id IN (7, 8)  -- Оценки руководителя
+                AND f.plan = 0  -- Только факты
+                AND YEAR(f.fact_time) = {year}
+                AND CONCAT(u.last_name, ' ', u.first_name, ' ', IFNULL(u.middle_name, '')) LIKE '%{employee_name}%'
+                AND f.user_id != u.user_id  -- Автор НЕ равен оцениваемому
+
+            UNION ALL
+
+            -- Оценки с indicator_behaviour_id = 5 (стандартные оценки)
+            SELECT 
+                'Оценка коллег' as evaluation_type,
+                f.value,
+                f.comment
+            FROM indicator_to_mo_fact f
+            JOIN indicator_to_mo itm ON f.indicator_to_mo_id = itm.indicator_to_mo_id
+            JOIN indicator i ON itm.indicator_id = i.indicator_id
+            JOIN indicator_behaviour ib ON i.indicator_behaviour_id = ib.indicator_behaviour_id
+            JOIN user_to_mo utmo ON itm.mo_id = utmo.mo_id
+            JOIN user u ON utmo.user_id = u.user_id
+            WHERE 
+                ib.indicator_behaviour_id = 5  -- Стандартные оценки
+                AND f.plan = 0  -- Только факты
+                AND YEAR(f.fact_time) = {year}
+                AND CONCAT(u.last_name, ' ', u.first_name, ' ', IFNULL(u.middle_name, '')) LIKE '%{employee_name}%'
+                AND f.user_id != u.user_id  -- Автор НЕ равен оцениваемому
+        ) as combined_evaluations
+        GROUP BY evaluation_type
+        ORDER BY evaluation_type
+        """
+
+    def analyze_evaluations_with_ai(self, evaluation_data: List[Dict], employee_name: str) -> str:
+        """Анализ оценок с помощью ИИ"""
+
+        if not self.client:
+            return "⚠️ ИИ-анализ недоступен (Ollama не подключен)"
+
+        # Формируем промпт для ИИ
+        prompt = f"""
+        Проанализируй оценки сотрудника {employee_name} и дай развернутое мнение как эксперт по HR.
+
+        Данные оценок:
+        """
+
+        total_evaluations = 0
+        for eval_data in evaluation_data:
+            eval_type = eval_data['evaluation_type']
+            avg_rating = float(eval_data['avg_rating'])
+            count = eval_data['rating_count']
+            min_rating = eval_data['min_rating']
+            max_rating = eval_data['max_rating']
+            comments = eval_data.get('detailed_comments', "Комментарии отсутствуют")
+
+            total_evaluations += count
+
+            prompt += f"""
+
+            === {eval_type} ===
+            • Количество оценок: {count}
+            • Средняя оценка: {avg_rating:.1f}%
+            • Диапазон оценок: от {min_rating}% до {max_rating}%
+            • Подробные комментарии и оценки:
+            {comments if comments else "Комментарии отсутствуют"}
+            """
+
+        prompt += f"""
+
+        Всего оценок: {total_evaluations}
+
+        Дай подробный анализ:
+        1. Общая характеристика сотрудника на основе оценок
+        2. Что преобладает в оценках - положительные или отрицательные моменты?
+        3. Есть ли расхождения между самооценкой и оценками других?
+        4. Анализ комментариев - какие сильные и слабые стороны отмечают?
+        5. Общие выводы и рекомендации
+
+        Отвечай как HR-эксперт, используя профессиональную терминологию.
+        """
+
+        try:
+            # Отправляем запрос к ИИ
+            response = self.client.chat(model='llama2:13b', messages=[
+                {'role': 'system',
+                 'content': 'Ты - эксперт по HR и анализу персонала. Анализируй данные объективно и профессионально.'},
+                {'role': 'user', 'content': prompt}
+            ])
+
+            return response['message']['content']
+
+        except Exception as e:
+            return f"⚠️ Ошибка ИИ-анализа: {str(e)}\n\n**Базовый анализ:**\n\nНа основе собранных данных можно сделать выводы о стабильности оценок сотрудника. Средние показатели и количество оценок указывают на регулярность оценочных процедур."
+
+    def build_diagnostic_query(self, employee_name: str, year: int) -> str:
+        """Диагностический запрос для проверки данных сотрудника"""
+
+        return f"""
+        SELECT 
+            'Общие факты' as data_type,
+            COUNT(*) as count,
+            GROUP_CONCAT(DISTINCT i.indicator_id) as indicator_ids,
+            GROUP_CONCAT(DISTINCT ib.indicator_behaviour_id) as behaviour_ids
+        FROM indicator_to_mo_fact f
+        JOIN indicator_to_mo itm ON f.indicator_to_mo_id = itm.indicator_to_mo_id
+        JOIN indicator i ON itm.indicator_id = i.indicator_id
+        JOIN indicator_behaviour ib ON i.indicator_behaviour_id = ib.indicator_behaviour_id
+        JOIN user_to_mo utmo ON itm.mo_id = utmo.mo_id
+        JOIN user u ON utmo.user_id = u.user_id
+        WHERE 
+            f.plan = 0  -- Только факты
+            AND YEAR(f.fact_time) = {year}
+            AND CONCAT(u.last_name, ' ', u.first_name, ' ', IFNULL(u.middle_name, '')) LIKE '%{employee_name}%'
+
+        UNION ALL
+
+        SELECT 
+            'Пользователи' as data_type,
+            COUNT(*) as count,
+            GROUP_CONCAT(DISTINCT u.user_id) as indicator_ids,
+            GROUP_CONCAT(DISTINCT CONCAT(u.last_name, ' ', u.first_name, ' ', IFNULL(u.middle_name, ''))) as behaviour_ids
+        FROM user u
+        WHERE CONCAT(u.last_name, ' ', u.first_name, ' ', IFNULL(u.middle_name, '')) LIKE '%{employee_name}%'
+        """
+
+    def format_evaluation_summary_results(self, results: List[Dict]) -> str:
+        """Форматирование результатов анализа оценок"""
+
+        if not results:
+            return "📊 Оценки не найдены"
+
+        response = "📊 **Обобщение оценок сотрудника**\n\n"
+
+        total_avg = sum(r['avg_rating'] for r in results) / len(results)
+        response += f"**Общая средняя оценка:** {total_avg:.1f}%\n"
+        response += f"**Количество оценивающих:** {len(results)}\n\n"
+
+        response += "### Детальный анализ по оценивающим:\n\n"
+
+        for result in results:
+            evaluator_name = f"{result['last_name']} {result['first_name']} {result['middle_name'] or ''}".strip()
+            response += f"**{evaluator_name}:**\n"
+            response += f"- Средняя оценка: {result['avg_rating']:.1f}%\n"
+            response += f"- Количество оценок: {result['rating_count']}\n"
+
+            if result['comments']:
+                comments = result['comments'].split(' | ')
+                response += f"- Комментарии: {'; '.join(comments[:3])}\n"
+                if len(comments) > 3:
+                    response += f"  (и еще {len(comments) - 3} комментариев)\n"
+
+            response += "\n"
+
+        return response
+
+    def format_manager_self_evaluation_results(self, results: List[Dict], employee_name: str) -> str:
+        """Форматирование результатов анализа оценок руководителя и самооценок"""
+        if not results:
+            return "📊 Оценки не найдены"
+
+        # Базовая статистика
+        output = f"📊 **Анализ оценок: {employee_name}**\n\n"
+
+        # Краткая статистика
+        output += "### 📈 Статистика оценок\n"
+        for result in results:
+            eval_type = result['evaluation_type']
+            avg_rating = float(result['avg_rating'])
+            count = result['rating_count']
+            min_rating = result['min_rating']
+            max_rating = result['max_rating']
+
+            output += f"**{eval_type}:**\n"
+            output += f"- Количество: {count} оценок\n"
+            output += f"- Средняя оценка: {avg_rating:.1f}%\n"
+            output += f"- Диапазон: {min_rating}% - {max_rating}%\n\n"
+
+        # ИИ-анализ
+        output += "### 🤖 **Экспертный анализ**\n\n"
+        ai_analysis = self.analyze_evaluations_with_ai(results, employee_name)
+        output += ai_analysis
+
+        return output
 
     def analyze_query_intent(self, prompt: str) -> Tuple[str, Dict]:
         """Анализирует намерение пользователя и извлекает параметры"""
@@ -73,14 +353,38 @@ class SmartDatabaseAgent:
             'date_range': self.extract_date_range(prompt),
             'limit': self.extract_limit(prompt),
             'order_by': self.extract_order_preference(prompt),
-            'period_type': self.extract_period_type(prompt)
+            'period_type': self.extract_period_type(prompt),
+            'year': self.extract_year_from_query(prompt)
         }
 
         if self.debug_mode:
             print(f"🔍 Анализ запроса: {prompt}")
             print(f"📊 Параметры: {params}")
 
-        # Определяем тип запроса
+        # Проверяем новые типы запросов для оценок
+        if any(pattern in prompt_lower for pattern in [
+            "обобщение оценок", "сделай обобщение оценок", "анализ оценок",
+            "средняя оценка", "анализ комментариев"
+        ]):
+            if self.debug_mode:
+                print("🎯 Найден паттерн: evaluation_summary")
+            return 'evaluation_summary', params
+
+        if any(pattern in prompt_lower for pattern in [
+            "обобщение оценки руководителем и самооценок",
+            "оценка руководителя и самооценка",
+            "руководитель и самооценка",
+            "сравнение самооценки и оценки руководителя"
+        ]):
+            if self.debug_mode:
+                print("🎯 Найден паттерн: manager_self_evaluation")
+            return 'manager_self_evaluation', params
+
+        # Для обычных запросов, если indicator_id не определен, ставим 1
+        if params['indicator_id'] is None:
+            params['indicator_id'] = 1
+
+        # Определяем тип запроса по существующим паттернам
         for pattern_name, pattern_info in self.query_patterns.items():
             if any(keyword in prompt_lower for keyword in pattern_info['keywords']):
                 if self.debug_mode:
@@ -126,7 +430,20 @@ class SmartDatabaseAgent:
 
     def extract_indicator_id(self, prompt: str) -> int:
         """Извлекает ID показателя из запроса"""
-        match = re.search(r'показател[юьи]\s*(\d+)', prompt.lower())
+        prompt_lower = prompt.lower()
+
+        # Для запросов на оценки НЕ извлекаем indicator_id,
+        # так как он определяется в самих SQL-запросах
+        evaluation_keywords = [
+            "обобщение оценок", "анализ оценок", "оценка руководителя",
+            "самооценка", "оценки", "комментарии"
+        ]
+
+        if any(keyword in prompt_lower for keyword in evaluation_keywords):
+            return None  # Для оценок indicator_id определяется в SQL
+
+        # Для обычных запросов ищем номер показателя
+        match = re.search(r'показател[юьи]\s*(\d+)', prompt_lower)
         return int(match.group(1)) if match else 1
 
     def extract_date_range(self, prompt: str) -> Dict:
@@ -181,7 +498,7 @@ class SmartDatabaseAgent:
     def extract_order_preference(self, prompt: str) -> str:
         """Определяет предпочтение сортировки"""
         prompt_lower = prompt.lower()
-        if any(word in prompt_lower for word in ['худшие', 'плохие', 'низкие']):
+        if any(word in prompt_lower for word in ['худшие', 'плохие', 'низкие', 'худших', 'плохих']):
             return 'ASC'
         return 'DESC'
 
@@ -454,21 +771,27 @@ class SmartDatabaseAgent:
 
         return "\n".join(response)
 
-    def format_top_employees_results(self, results: List[Dict], is_worst: bool = False) -> str:
-        """Форматирует результаты топ сотрудников"""
-        title = "📉 Худшие исполнители:" if is_worst else "📊 Топ сотрудников по эффективности:"
-        response = [title]
+    def format_top_employees_results(self, results: List[Dict]) -> str:
+        """Форматирование результатов для топ сотрудников"""
+        if not results:
+            return "📊 Результаты не найдены"
 
-        for idx, row in enumerate(results, 1):
-            if isinstance(row, (tuple, list)) and len(row) >= 5:
-                name = f"{row[0]} {row[1]}"
-                fact = row[2] if row[2] is not None else 'N/A'
-                plan = row[3] if row[3] is not None else 'N/A'
-                result = row[4] if row[4] is not None else 'N/A'
+        output = "📊 **Топ сотрудников**\n\n"
 
-                response.append(f"{idx:2d}. {name:<25} | Факт: {fact:>8} | План: {plan:>8} | Результат: {result:>8}%")
+        for i, result in enumerate(results, 1):
+            # Проверяем, что result - это словарь
+            if isinstance(result, dict):
+                employee_name = result.get('employee_name', 'Неизвестно')
+                fact_value = result.get('fact', 0)
+                result_percent = result.get('result', 0)
 
-        return "\n".join(response)
+                output += f"{i}. **{employee_name}**\n"
+                output += f"   • Факт: {fact_value}\n"
+                output += f"   • Результат: {result_percent:.1f}%\n\n"
+            else:
+                output += f"{i}. Ошибка формата данных\n"
+
+        return output
 
     def format_generic_results(self, results: List[Dict]) -> str:
         """Общее форматирование результатов"""
@@ -536,39 +859,118 @@ class SmartDatabaseAgent:
             return f"❌ Ошибка при обработке сложного запроса: {str(e)}"
 
     def process_query(self, prompt: str) -> str:
-        """Обрабатывает запрос пользователя"""
+        """Основной метод обработки запроса"""
         try:
-            # Проверяем, нужна ли сложная обработка
-            if 'чаще всех перевыполнял' in prompt.lower() and (
-                    'факты помесячно' in prompt.lower() or 'помесячно' in prompt.lower()):
-                return self.handle_best_performer_with_dynamics(prompt)
+            # Получаем тип запроса и параметры
+            query_type, params = self.analyze_query_intent(prompt)
 
-            # Анализируем намерение
-            template, params = self.analyze_query_intent(prompt)
+            # Обработка новых типов запросов для оценок
+            if query_type == 'evaluation_summary':
+                employee_names = params.get('employee_names', [])
+                year = params.get('year')
 
-            # Генерируем SQL
-            sql = self.generate_sql_by_template(template, params)
+                if not employee_names:
+                    return "❌ Не удалось определить имя сотрудника"
 
-            if self.debug_mode:
-            # print(f"🔍 Сгенерированный SQL:")
-            # print(sql)
+                if not year:
+                    return "❌ Не удалось определить год для анализа"
 
-            # Выполняем запрос
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(sql)
-                results = cursor.fetchall()
+                sql_query = self.build_evaluation_summary_query(employee_names[0], year)
+                results = self.execute_query(sql_query)
 
-            if self.debug_mode:
-                print(f"📊 Получено результатов: {len(results)}")
-                if results:
-                    print(f"🔍 Первый результат: {results[0]}")
+                return self.format_evaluation_summary_results(results)
 
-            # Форматируем результаты
-            return self.format_results_smart(results, template, params)
+            elif query_type == 'manager_self_evaluation':
+                employee_names = params.get('employee_names', [])
+                year = params.get('year')
+
+                if not employee_names:
+                    return "❌ Не удалось определить имя сотрудника"
+
+                if not year:
+                    return "❌ Не удалось определить год для анализа"
+
+                sql_query = self.build_manager_self_evaluation_query(employee_names[0], year)
+                results = self.execute_query(sql_query)
+
+                return self.format_manager_self_evaluation_results(results, employee_names[0])
+
+            # Обработка существующих типов запросов
+            elif query_type == 'top_employees':
+                sql_query = self.build_top_employees_query(params)
+                results = self.execute_query(sql_query)
+                return self.format_top_employees_results(results)
+
+            elif query_type == 'employee_dynamics':
+                if params['employee_names']:
+                    sql_query = self.build_employee_dynamics_query(params)
+                    results = self.execute_query(sql_query)
+                    return self.format_dynamics_results(results, params['employee_names'][0])
+                else:
+                    return "❌ Не удалось определить имя сотрудника"
+
+            elif query_type == 'plan_analysis':
+                sql_query = self.build_plan_analysis_query(params)
+                results = self.execute_query(sql_query)
+                return self.format_plan_analysis_results(results)
+
+            elif query_type == 'worst_performers':
+                sql_query = self.build_worst_performers_query(params)
+                results = self.execute_query(sql_query)
+                return self.format_top_employees_results(results)
+
+            elif query_type == 'period_comparison':
+                sql_query = self.build_period_comparison_query(params)
+                results = self.execute_query(sql_query)
+                return self.format_generic_results(results)
+
+            elif query_type == 'best_performer_dynamics':
+                return self.handle_best_performer_with_dynamics(params)
+
+            elif query_type == 'exact_employee_dynamics':
+                if params['employee_names']:
+                    sql_query = self.build_exact_employee_dynamics_query(params)
+                    results = self.execute_query(sql_query)
+                    return self.format_dynamics_results(results, params['employee_names'][0])
+                else:
+                    return "❌ Не удалось определить имя сотрудника"
+
+            else:
+                # Используем универсальный SQL-генератор
+                sql_query = self.generate_sql_by_template(query_type, params)
+                results = self.execute_query(sql_query)
+                return self.format_results_smart(results, query_type)
 
         except Exception as e:
-            return f"❌ Ошибка: {str(e)}"
+            return f"❌ Ошибка при обработке запроса: {str(e)}"
+
+    def extract_year_from_query(self, query: str) -> int:
+        """Извлечение года из запроса"""
+
+        import re
+
+        # Поиск четырехзначного числа, которое может быть годом
+        year_match = re.search(r'\b(20\d{2})\b', query)
+        if year_match:
+            return int(year_match.group(1))
+
+        # Если год не найден, возвращаем текущий год
+        from datetime import datetime
+        return datetime.now().year
+
+    def execute_query(self, sql_query: str) -> List[Dict]:
+        """Выполняет SQL-запрос к базе данных"""
+        try:
+            # Импортируем здесь, чтобы избежать циклических импортов
+            from old.db_connect import get_db_connection
+
+            with get_db_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute(sql_query)
+                results = cursor.fetchall()
+                return results
+        except Exception as e:
+            return []
 
 
 def main():

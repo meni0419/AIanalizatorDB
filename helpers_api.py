@@ -1,6 +1,6 @@
 import google.generativeai as genai
 import os
-from db_connect import get_db_connection
+from old.db_connect import get_db_connection
 from typing import List, Dict, Any
 
 # Конфигурация Gemini API
@@ -86,16 +86,17 @@ def format_data_to_csv(data: List[Dict[str, Any]]) -> str:
     return headers + "\n" + "\n".join(csv_rows)
 
 
-def analyze_data(data: List[Dict[str, Any]], prompt: str) -> str:
+# def analyze_data(data: List[Dict[str, Any]]='', prompt: str='') -> str:
+def analyze_data(prompt: str) -> str:
     """Анализирует данные с помощью Gemini API"""
-    if not data:
-        return "Не найдено данных для анализа. Проверьте параметры запроса."
+    # if not data:
+    #     return "Не найдено данных для анализа. Проверьте параметры запроса."
 
     if not GEMINI_API_KEY:
         raise ValueError("API токен для Gemini не найден. Убедитесь, что переменная GEMINI_API_KEY установлена.")
 
-    print("Форматируем данные для анализа...")
-    data_csv = format_data_to_csv(data)
+    #print("Форматируем данные для анализа...")
+    # data_csv = format_data_to_csv(data)
 
     data_description = """
     ## Структура данных:
@@ -117,7 +118,7 @@ def analyze_data(data: List[Dict[str, Any]], prompt: str) -> str:
 
     ИНСТРУКЦИИ (ОБЯЗАТЕЛЬНЫЕ К ВЫПОЛНЕНИЮ):
     1. Используй ТОЛЬКО эти данные:
-    {data_csv}
+    '{'data_csv'}'
 
     2. Формат ответа ДОЛЖЕН быть:
     - Только фамилии и значения fact
@@ -134,9 +135,12 @@ def analyze_data(data: List[Dict[str, Any]], prompt: str) -> str:
     Запрос: {prompt}
     """
 
+    simple_prompt = f"""{prompt}"""
+
     try:
         print("Отправляем запрос к Gemini API...")
-        response = model.generate_content(full_prompt)
+        # response = model.generate_content(full_prompt)
+        response = model.generate_content(simple_prompt)
         print("Получен ответ от Gemini API")
         return response.text
     except Exception as e:
@@ -146,16 +150,16 @@ def analyze_data(data: List[Dict[str, Any]], prompt: str) -> str:
 
 def main():
     # Получение входных данных
-    custom_indicator_id = input("Какой показатель нужен для отчета: ")
-    custom_period_start = input("Период с (гггг-мм-дд): ")
-    custom_period_end = input("Период по (гггг-мм-дд): ")
+    # custom_indicator_id = input("Какой показатель нужен для отчета: ")
+    # custom_period_start = input("Период с (гггг-мм-дд): ")
+    # custom_period_end = input("Период по (гггг-мм-дд): ")
     prompt = input("Что хотите проанализировать: ")
 
     try:
         # Получаем объединенные данные одним запросом
-        combined_data = get_combined_data(custom_indicator_id, custom_period_start, custom_period_end)
+        # combined_data = get_combined_data(custom_indicator_id, custom_period_start, custom_period_end)
         # Анализ данных
-        result = analyze_data(combined_data, prompt)
+        result = analyze_data(prompt)
         print("\nРезультат анализа:")
         print(result)
 

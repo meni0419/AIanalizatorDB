@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepSeek Chat - {{ username }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="chat-body">
+    <div class="chat-container">
+        <!-- Боковая панель -->
+        <div class="sidebar open" id="sidebar">
+            <div class="sidebar-header">
+                <h3>🤖 DeepSeek Chat</h3>
+                <button id="sidebar-toggle" class="sidebar-toggle">←</button>
+            </div>
+
+            <div class="sidebar-content">
+                <div class="sidebar-actions">
+                    <button id="new-chat-btn" class="btn btn-primary">+ Новый чат</button>
+                    <button id="clear-history-btn" class="btn btn-warning">Очистить историю</button>
+                </div>
+
+                <div class="chat-history">
+                    <h4>История чатов</h4>
+                    <div id="sessions-list" class="sessions-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Основной контент -->
+        <div class="main-content">
+            <!-- Заголовок -->
+            <div class="chat-header">
+                <div class="header-left">
+                    <button id="sidebar-toggle-main" class="sidebar-toggle">☰</button>
+                    <span class="username">👤 {{ username }}</span>
+                </div>
+                <div class="header-center">
+                    <span class="model-name">🧠 {{ model_name }}</span>
+                    <span id="model-status" class="status {% if model_loaded %}loaded{% else %}not-loaded{% endif %}">
+                        {% if model_loaded %}🟢 Загружена{% else %}🔴 Не загружена{% endif %}
+                    </span>
+                </div>
+                <div class="header-right">
+                    <button id="preload-btn" class="btn btn-secondary" {% if model_loaded %}disabled{% endif %}>
+                        Загрузить модель
+                    </button>
+                    <button id="status-btn" class="btn btn-info">Статус</button>
+                    <button id="theme-toggle" class="btn btn-secondary">🌙</button>
+                    <button id="logout-btn" class="btn btn-secondary">Выйти</button>
+                </div>
+            </div>
+
+            <!-- Область сообщений -->
+            <div class="messages-container">
+                <div id="messages" class="messages"></div>
+            </div>
+
+            <!-- Панель ввода -->
+            <div class="input-panel">
+                <div class="file-upload-area">
+                    <input type="file" id="file-input" multiple accept=".txt,.csv,.json,.md,.py,.js,.html,.xml">
+                    <div id="attached-files" class="attached-files"></div>
+                </div>
+
+                <div class="input-row">
+                    <button id="attach-btn" class="btn btn-secondary">📎 Файл</button>
+                    <textarea id="message-input" placeholder="Введите ваше сообщение..." rows="3"></textarea>
+                    <button id="send-btn" class="btn btn-primary">Отправить</button>
+                </div>
+            </div>
+
+            <!-- Индикатор загрузки -->
+            <div id="loading" class="loading hidden">
+                <div class="loading-spinner"></div>
+                <span>DeepSeek думает...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно статуса -->
+    <div id="status-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>📊 Статус системы</h3>
+            <div id="status-info"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+</body>
+</html>

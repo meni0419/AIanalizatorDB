@@ -3,4 +3,15 @@ flask-session
 werkzeug
 ollama
 markdown
-bcrypt
+bcrypt~=4.3.0
+tenacity
+pydantic~=2.11.7
+PyMySQL~=1.1.1
+sshtunnel~=0.4.0
+python-dotenv~=1.1.1
+paramiko~=3.5.1
+requests~=2.32.4
+mysql-connector-python~=9.3.0
+protobuf~=5.29.5
+numpy
+sklearn

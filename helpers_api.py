@@ -1,12 +1,78 @@
-import google.generativeai as genai
-import os
 from old.db_connect import get_db_connection
 from typing import List, Dict, Any
+import google.generativeai as genai
+import os
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+import concurrent.futures
 
-# Конфигурация Gemini API
+
+try:
+    from google.api_core.exceptions import TooManyRequests
+except ImportError:
+    TooManyRequests = None
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-1.5-pro-latest"
+
+# Составляем список исключений для retry
+retry_excepts = (TimeoutError, Exception)
+if TooManyRequests:  # если доступно исключение, добавляем его
+    retry_excepts = (TimeoutError, TooManyRequests, Exception)
+
+@retry(
+    wait=wait_exponential(multiplier=2, min=2, max=10),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type(retry_excepts),
+    reraise=True
+)
+def safe_generate_content(model, prompt, timeout=200):
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(model.generate_content, prompt)
+            return future.result(timeout=timeout)
+    except Exception as e:
+        print(f'Ошибка API: {e} (retry)')
+        raise
+
+
+@retry(
+    wait=wait_exponential(multiplier=2, min=2, max=10),
+    stop=stop_after_attempt(5),
+    reraise=True
+)
+def get_embedding(text):
+    try:
+        embedding = genai.embed_content(
+            model="models/embedding-001",
+            content=text,
+            task_type="retrieval_document"
+        )['embedding']
+        return np.asarray(embedding)
+    except Exception as e:
+        print(f"Ошибка при получении эмбеддинга: {e} (retry)")
+        raise
+
+def cosine_sim(vec1, vec2):
+    """Косинусное сходство между векторами"""
+    vec1 = vec1.reshape(1, -1)
+    vec2 = vec2.reshape(1, -1)
+    return cosine_similarity(vec1, vec2)[0, 0]
+
+def find_most_similar(query_text, candidates: list):
+    """Возвращает самый похожий текст из списка candidates на query_text"""
+    query_emb = get_embedding(query_text)
+    max_score, best_text = -1, None
+    for cand in candidates:
+        cand_emb = get_embedding(cand)
+        score = cosine_sim(query_emb, cand_emb)
+        print(f"Сходство с '{cand}': {score:.3f}")
+        if score > max_score:
+            max_score, best_text = score, cand
+    return best_text, max_score
+
 
 
 def get_combined_data(indicator_id: str, period_start: str, period_end: str) -> List[Dict[str, Any]]:
@@ -20,16 +86,16 @@ def get_combined_data(indicator_id: str, period_start: str, period_end: str) -> 
             cursor = connection.cursor()
 
             query = """
-                    SELECT u.user_id, 
-                           u.last_name, 
-                           u.first_name, 
-                           u.middle_name, 
-                           itm.indicator_to_mo_id, 
-                           itm.indicator_id, 
-                           itm.mo_id, 
-                           cpv.period_start, 
-                           cpv.period_end, 
-                           cpv.fact, 
+                    SELECT u.user_id,
+                           u.last_name,
+                           u.first_name,
+                           u.middle_name,
+                           itm.indicator_to_mo_id,
+                           itm.indicator_id,
+                           itm.mo_id,
+                           cpv.period_start,
+                           cpv.period_end,
+                           cpv.fact,
                            cpv.`result`
                     FROM closed_period_values cpv
                              JOIN indicator_to_mo itm ON itm.indicator_to_mo_id = cpv.indicator_to_mo_id
@@ -39,7 +105,8 @@ def get_combined_data(indicator_id: str, period_start: str, period_end: str) -> 
                       AND cpv.period_start BETWEEN %s AND %s
                     """
 
-            print(f"Выполняем запрос с параметрами: indicator_id={indicator_id}, period_start={period_start}, period_end={period_end}")
+            print(
+                f"Выполняем запрос с параметрами: indicator_id={indicator_id}, period_start={period_start}, period_end={period_end}")
             cursor.execute(query, (indicator_id, period_start, period_end))
             results = cursor.fetchall()
             cursor.close()
@@ -95,7 +162,7 @@ def analyze_data(prompt: str) -> str:
     if not GEMINI_API_KEY:
         raise ValueError("API токен для Gemini не найден. Убедитесь, что переменная GEMINI_API_KEY установлена.")
 
-    #print("Форматируем данные для анализа...")
+    # print("Форматируем данные для анализа...")
     # data_csv = format_data_to_csv(data)
 
     data_description = """
@@ -153,18 +220,35 @@ def main():
     # custom_indicator_id = input("Какой показатель нужен для отчета: ")
     # custom_period_start = input("Период с (гггг-мм-дд): ")
     # custom_period_end = input("Период по (гггг-мм-дд): ")
+    model = genai.GenerativeModel(MODEL_NAME)
     prompt = input("Что хотите проанализировать: ")
 
     try:
         # Получаем объединенные данные одним запросом
         # combined_data = get_combined_data(custom_indicator_id, custom_period_start, custom_period_end)
         # Анализ данных
-        result = analyze_data(prompt)
-        print("\nРезультат анализа:")
-        print(result)
+        # result = analyze_data(prompt)
+        # print("\nРезультат анализа:")
+        response = safe_generate_content(model, prompt)
+        print("Ответ:", response.text)
+        # print(result)
 
     except Exception as e:
         print(f"Ошибка: {e}")
+
+    # Получить и сравнить эмбеддинги двух текстов
+    text1 = "Пример первого текста"
+    text2 = "Пример второго текста"
+    emb1 = get_embedding(text1)
+    emb2 = get_embedding(text2)
+    sim = cosine_sim(emb1, emb2)
+    print(f"Косинусное сходство: {sim:.3f}")
+
+    # Поиск самого похожего текста
+    candidates = ["Текст 1", "Текст о погоде", "Это пример первого текста", "Разный контент"]
+    query = "Пример первого текста"
+    best, score = find_most_similar(query, candidates)
+    print(f"Самый похожий текст: '{best}' (сходство {score:.3f})")
 
 
 if __name__ == "__main__":
